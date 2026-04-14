@@ -7,53 +7,61 @@ from datetime import datetime, timedelta
 import urllib.parse
 import xml.etree.ElementTree as ET
 import numpy as np
+import pandas as pd
+import difflib
 
 # 1. 앱 기본 설정
 st.set_page_config(page_title="주식 검색기", layout="wide")
 st.title("📑 통합 보고서")
 
-# [강화된 검색 엔진] 네이버 API 우회 + 우량주 내장 메모리
-@st.cache_data(ttl=3600)
-def search_stock_naver(query):
-    # 1. 무적의 내장 메모리 (서버가 막혀도 무조건 작동하는 대표 우량주 목록)
-    top_stocks = {
-        "삼성전자": "005930", "SK하이닉스": "000660", "LG에너지솔루션": "373220",
-        "삼성바이오로직스": "207940", "현대차": "005380", "기아": "000270",
-        "셀트리온": "068270", "POSCO홀딩스": "005490", "NAVER": "035420",
-        "LG화학": "051910", "삼성SDI": "006400", "삼성물산": "028260",
-        "카카오": "035720", "KB금융": "105560", "신한지주": "055550",
-        "현대모비스": "012330", "포스코퓨처엠": "003670", "하나금융지주": "086790",
-        "LG전자": "066570", "메리츠금융지주": "138040", "에코프로비엠": "247540",
-        "에코프로": "086520", "아비코전자": "036010"
-    }
+# [핵심] 상장사 전체 목록을 앱 내부에 구축하는 로직 (3중 우회)
+@st.cache_data(ttl=86400) # 하루 단위로 캐시 업데이트
+def load_all_stocks():
+    stock_dict = {}
     
-    # 입력한 이름이 내장 메모리에 있으면 서버에 묻지 않고 즉시 반환
-    if query in top_stocks:
-        return [{'Name': query, 'Code': top_stocks[query]}]
-        
-    # 2. 네이버 검색 API (강력한 신분 위장 헤더 추가)
-    url = f"https://ac.finance.naver.com/ac?q={urllib.parse.quote(query)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8"
+    # Plan A: FinanceDataReader 기본 로드 시도
     try:
-        # 봇이 아니라 진짜 네이버 금융 사이트를 이용 중인 사람인 것처럼 속입니다.
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://finance.naver.com/',
-            'Accept': 'application/json, text/javascript, */*; q=0.01'
-        }
-        res = requests.get(url, headers=headers, timeout=5)
-        data = res.json()
-        items = data.get('items', [[]])[0]
-        results = []
-        for item in items:
-            if len(item) >= 2:
-                results.append({'Name': item[0], 'Code': item[1]})
-        return results
-    except Exception:
-        return []
+        df = fdr.StockListing('KRX')
+        if not df.empty and 'Name' in df.columns:
+            for _, row in df.iterrows():
+                stock_dict[row['Name']] = str(row['Code']).zfill(6)
+            return stock_dict
+    except:
+        pass
+
+    # Plan B: KIND 공시 포털 HTML 직접 파싱 (API가 아닌 엑셀 다운로드용 웹페이지 우회 접근)
+    try:
+        url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(url, headers=headers, timeout=10)
+        res.encoding = 'euc-kr' # KIND 서버 기본 인코딩
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        for tr in soup.find_all('tr'):
+            tds = tr.find_all('td')
+            if len(tds) >= 2:
+                name = tds[0].text.strip()
+                code = tds[1].text.strip()
+                if code.isdigit():
+                    stock_dict[name] = code.zfill(6)
+        if stock_dict:
+            return stock_dict
+    except:
+        pass
+
+    # Plan C: 모든 연결이 차단되었을 때의 최소한의 작동 보장
+    return {
+        "삼성전자": "005930", "SK하이닉스": "000660", "현대차": "005380",
+        "기아": "000270", "NAVER": "035420", "카카오": "035720", 
+        "코텍": "052330", "아비코전자": "036010"
+    }
+
+# 전체 종목 딕셔너리 로드
+stock_dict = load_all_stocks()
 
 # 2. 사이드바: 지능형 검색창
 st.sidebar.write("### 🔍 지능형 종목 검색")
-st.sidebar.caption("종목명을 입력하세요 (오타 보정 및 자동완성 지원)")
+st.sidebar.caption("종목명의 일부만 입력하거나 오타가 있어도 찾아줍니다.")
 user_input = st.sidebar.text_input("종목명 또는 코드 입력", value="삼성전자")
 
 if user_input:
@@ -66,25 +74,29 @@ if user_input:
             # 입력값이 6자리 숫자(코드)인 경우
             if user_input.isdigit() and len(user_input) == 6:
                 target_code = user_input
-                target_name = user_input
-                search_res = search_stock_naver(user_input)
-                if search_res:
-                    target_name = search_res[0]['Name']
+                # 코드로 이름 역추적
+                target_name = next((name for name, code in stock_dict.items() if code == target_code), user_input)
             
             # 입력값이 문자(이름)인 경우
             else:
-                search_res = search_stock_naver(user_input)
-                if search_res:
-                    exact_match = [s for s in search_res if s['Name'] == user_input]
-                    if exact_match:
-                        target_code = exact_match[0]['Code']
-                        target_name = exact_match[0]['Name']
-                    else:
-                        suggestions = [s['Name'] for s in search_res]
+                if user_input in stock_dict:
+                    # 정확한 이름 매칭
+                    target_code = stock_dict[user_input]
+                    target_name = user_input
+                else:
+                    # 정확한 이름이 없을 때 유사 검색 (오타 교정 및 부분 일치)
+                    all_names = list(stock_dict.keys())
+                    partial_matches = [name for name in all_names if user_input in name]
+                    close_matches = difflib.get_close_matches(user_input, all_names, n=5, cutoff=0.4)
+                    
+                    # 두 리스트를 합치고 중복 제거
+                    suggestions = list(dict.fromkeys(partial_matches + close_matches))
+                    
+                    if suggestions:
                         st.sidebar.warning(f"⚠️ '{user_input}'과(와) 정확히 일치하는 종목이 없습니다.")
                         st.sidebar.info("💡 **아래 종목 중 하나를 찾으시나요?**\n\n" + "\n".join([f"- **{s}**" for s in suggestions[:7]]))
-                else:
-                    st.sidebar.error("❌ 서버 응답 지연으로 종목명을 찾을 수 없습니다. '005930'과 같이 6자리 숫자로 된 종목코드를 직접 입력해 주세요.")
+                    else:
+                        st.sidebar.error("❌ 일치하거나 비슷한 종목명을 찾을 수 없습니다. (데이터 소스 오류일 수 있습니다)")
 
             # 정확한 종목 코드를 찾았을 때만 분석 시작
             if target_code:
@@ -131,7 +143,7 @@ if user_input:
                         st.divider()
                         st.info(f"💡 {opinion}")
 
-                    # --- 표 스타일 지정 (가운데/우측 정렬) ---
+                    # --- 표 스타일 지정 (가운데/우측 정렬 유지) ---
                     table_style = """
                     <style>
                         .custom-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border: 1px solid #ddd; }
@@ -184,6 +196,7 @@ if user_input:
                         for key in strat: a_html += f"<td class='right-num'>{strat[key][i]:,}원</td>"
                         a_html += "</tr>"
                     st.markdown(a_html + "</tbody></table>", unsafe_allow_html=True)
-
+                else:
+                    st.error("해당 종목의 가격 데이터를 불러올 수 없습니다. 일시적인 서버 통신 장애일 수 있습니다.")
         except Exception as e:
-            st.error(f"⚠️ 데이터를 분석하는 중 문제가 발생했습니다. (사유: {e})")
+            st.error(f"⚠️ 데이터 처리 중 오류가 발생했습니다. (사유: {e})")
