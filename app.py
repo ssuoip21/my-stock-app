@@ -8,13 +8,14 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
+import difflib  # 유사도 검색을 위한 기본 라이브러리 추가
 
 # 1. 앱 기본 설정
 st.set_page_config(page_title="주식 검색기", layout="wide")
 st.title("📑 통합 보고서")
 
-# [개선] 종목 리스트 로드 및 에러 방지 로직
-@st.cache_data(ttl=3600)
+# 종목 리스트 캐싱 (하루 동안 보관하여 속도 향상)
+@st.cache_data(ttl=86400)
 def load_stock_list():
     try:
         df = fdr.StockListing('KRX')
@@ -26,38 +27,51 @@ def load_stock_list():
 
 df_stock_list = load_stock_list()
 
-# 2. 사이드바 검색
-st.sidebar.write("### 🔍 종목 검색")
-user_input = st.sidebar.text_input("종목명(예: 삼성전자) 또는 코드(005930)를 입력하세요", value="삼성전자")
+# 2. 사이드바: 똑똑해진 검색창
+st.sidebar.write("### 🔍 지능형 종목 검색")
+st.sidebar.caption("종목명의 일부만 입력하거나 오타가 있어도 찾아줍니다.")
+user_input = st.sidebar.text_input("종목명을 입력하세요", value="삼성전자")
 
 if user_input:
-    with st.spinner(f"'{user_input}'의 데이터를 분석 중입니다..."):
+    with st.spinner(f"'{user_input}' 종목을 찾는 중입니다..."):
         try:
             target_code = None
             target_name = None
+            suggestions = []
 
-            # 입력값이 6자리 숫자(코드)인 경우
-            if user_input.isdigit() and len(user_input) == 6:
-                target_code = user_input
-                if not df_stock_list.empty:
-                    match = df_stock_list[df_stock_list['Code'] == target_code]
-                    target_name = match['Name'].values[0] if not match.empty else target_code
+            if not df_stock_list.empty:
+                # 1단계: 정확히 일치하는 이름 찾기
+                exact_match = df_stock_list[df_stock_list['Name'] == user_input]
+                
+                if not exact_match.empty:
+                    target_code = exact_match['Code'].values[0]
+                    target_name = user_input
                 else:
-                    target_name = target_code
-            
-            # 입력값이 이름인 경우
-            else:
-                if not df_stock_list.empty:
-                    match = df_stock_list[df_stock_list['Name'] == user_input]
-                    if not match.empty:
-                        target_code = match['Code'].values[0]
-                        target_name = user_input
+                    # 2단계: 정확한 이름이 없다면 유사 검색 및 오타 교정 시작
+                    all_names = df_stock_list['Name'].dropna().tolist()
+                    
+                    # (1) 입력한 글자가 포함된 종목들 (예: '삼성' -> 삼성전자, 삼성물산 등)
+                    partial_matches = [name for name in all_names if user_input in name]
+                    
+                    # (2) 글자가 비슷하게 생긴 종목들 (오타 교정, 예: '아비크' -> 아비코전자)
+                    close_matches = difflib.get_close_matches(user_input, all_names, n=5, cutoff=0.4)
+                    
+                    # 두 결과를 합치고 중복 제거
+                    for name in partial_matches + close_matches:
+                        if name not in suggestions:
+                            suggestions.append(name)
+                    
+                    # 제안할 종목이 있다면 사이드바에 표시
+                    if suggestions:
+                        st.sidebar.warning(f"⚠️ '{user_input}'과(와) 정확히 일치하는 종목이 없습니다.")
+                        st.sidebar.info("💡 **혹시 아래 종목을 찾으시나요?**\n\n" + "\n".join([f"- **{s}**" for s in suggestions[:7]]))
                     else:
-                        st.sidebar.warning(f"⚠️ '{user_input}'을(를) 찾을 수 없습니다. 정확한 명칭인지 확인해 주세요.")
-                else:
-                    st.sidebar.error("❌ 현재 거래소 서버 연결이 원활하지 않아 이름 검색이 어렵습니다. '005930'과 같은 숫자로 된 코드를 입력해 주세요.")
+                        st.sidebar.error("❌ 일치하거나 비슷한 종목명을 찾을 수 없습니다.")
 
-            # 분석 시작
+            else:
+                st.sidebar.error("거래소 서버 연결 지연으로 종목 리스트를 불러오지 못했습니다.")
+
+            # 정확한 종목 코드를 찾았을 때만 리포트 생성
             if target_code:
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 now = datetime.now()
@@ -73,7 +87,6 @@ if user_input:
                     prev_p = int(df_recent['Close'].iloc[-2])
                     ma20_curr = df_recent['MA20'].iloc[-1]
                     
-                    # AI 투자 의견 계산
                     X = np.arange(len(df_recent))
                     y = df_recent['Close'].values
                     coef = np.polyfit(X, y, 1)
@@ -103,7 +116,7 @@ if user_input:
                         st.divider()
                         st.info(f"💡 {opinion}")
 
-                    # --- 표 스타일 및 하단 데이터 ---
+                    # --- 표 스타일 ---
                     table_style = """
                     <style>
                         .custom-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border: 1px solid #ddd; }
@@ -114,6 +127,7 @@ if user_input:
                         .custom-table tr:nth-child(even) { background-color: #fcfcfc; }
                     </style>
                     """
+                    
                     st.divider()
                     st.subheader("📈 10거래일 투자자별 순매수 동향")
                     f_url = f"https://finance.naver.com/item/frgn.naver?code={target_code}"
@@ -132,6 +146,13 @@ if user_input:
                             c += 1
                             if c >= 10: break
                     st.markdown(s_html + "</tbody></table>", unsafe_allow_html=True)
+
+                    st.divider()
+                    st.subheader("📰 최신 주요 뉴스")
+                    rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(target_name)}&hl=ko&gl=KR&ceid=KR:ko"
+                    root = ET.fromstring(requests.get(rss_url).content)
+                    for i, item in enumerate(root.findall('.//item')[:5]):
+                        st.markdown(f"{i+1}. [{item.find('title').text}]({item.find('link').text})")
 
                     st.divider()
                     st.subheader("🎯 AI 투자 전략 시나리오")
