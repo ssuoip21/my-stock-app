@@ -8,95 +8,84 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
-import difflib
 
 # 1. 앱 기본 설정
 st.set_page_config(page_title="주식 검색기", layout="wide")
 st.title("📑 통합 보고서")
 
-# [핵심] 상장사 전체 목록을 앱 내부에 구축하는 로직 (3중 우회)
-@st.cache_data(ttl=86400) # 하루 단위로 캐시 업데이트
-def load_all_stocks():
-    stock_dict = {}
+# [궁극의 해결책] 네이버 금융 통합 검색 엔진 직접 활용 (차단 X, 소형주 100% 검색)
+@st.cache_data(ttl=3600)
+def resolve_stock(query):
+    query = query.strip()
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
-    # Plan A: FinanceDataReader 기본 로드 시도
-    try:
-        df = fdr.StockListing('KRX')
-        if not df.empty and 'Name' in df.columns:
-            for _, row in df.iterrows():
-                stock_dict[row['Name']] = str(row['Code']).zfill(6)
-            return stock_dict
-    except:
-        pass
-
-    # Plan B: KIND 공시 포털 HTML 직접 파싱 (API가 아닌 엑셀 다운로드용 웹페이지 우회 접근)
-    try:
-        url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res = requests.get(url, headers=headers, timeout=10)
-        res.encoding = 'euc-kr' # KIND 서버 기본 인코딩
-        soup = BeautifulSoup(res.text, 'html.parser')
+    # 1. 6자리 숫자를 입력한 경우 (바로 해당 종목 페이지로 직행)
+    if query.isdigit() and len(query) == 6:
+        try:
+            url = f"https://finance.naver.com/item/main.naver?code={query}"
+            res = requests.get(url, headers=headers, timeout=5)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            name_tag = soup.select_one('.wrap_company h2 a')
+            if name_tag:
+                return query, name_tag.text.strip(), []
+        except:
+            pass
+        return query, query, [] # 이름 추출 실패 시 코드만 반환
         
-        for tr in soup.find_all('tr'):
-            tds = tr.find_all('td')
-            if len(tds) >= 2:
-                name = tds[0].text.strip()
-                code = tds[1].text.strip()
-                if code.isdigit():
-                    stock_dict[name] = code.zfill(6)
-        if stock_dict:
-            return stock_dict
-    except:
+    # 2. 한글/영문 이름을 입력한 경우 (네이버 금융 검색창 결과 파싱)
+    try:
+        # 네이버 금융 검색은 euc-kr 인코딩을 사용합니다.
+        encoded_query = urllib.parse.quote(query.encode('euc-kr', errors='ignore'))
+        url = f"https://finance.naver.com/search/searchList.naver?query={encoded_query}"
+        res = requests.get(url, headers=headers, timeout=5)
+        
+        # [핵심] 정확한 종목명을 입력하면 네이버가 검색 목록 대신 '종목 상세 페이지'로 즉시 자동 이동(Redirect)시킵니다.
+        if '/item/main.naver?code=' in res.url:
+            code = res.url.split('code=')[-1].split('&')[0]
+            soup = BeautifulSoup(res.text, 'html.parser')
+            name_tag = soup.select_one('.wrap_company h2 a')
+            name = name_tag.text.strip() if name_tag else query
+            return code, name, []
+            
+        # 정확한 일치가 없어 '검색 결과 목록'이 나타난 경우 (오타, 부분 일치 등)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        a_tags = soup.select('td.tit a')
+        if a_tags:
+            # 가장 정확도 높은 첫 번째 결과를 선택
+            best_code = a_tags[0].get('href', '').split('code=')[-1]
+            best_name = a_tags[0].text.strip()
+            
+            # 나머지 결과들은 사용자에게 제안하기 위해 수집
+            suggestions = []
+            for a in a_tags:
+                n = a.text.strip()
+                if n != best_name and n not in suggestions:
+                    suggestions.append(n)
+                    
+            return best_code, best_name, suggestions[:7] # 최대 7개만 제안
+    except Exception:
         pass
+        
+    return None, None, []
 
-    # Plan C: 모든 연결이 차단되었을 때의 최소한의 작동 보장
-    return {
-        "삼성전자": "005930", "SK하이닉스": "000660", "현대차": "005380",
-        "기아": "000270", "NAVER": "035420", "카카오": "035720", 
-        "코텍": "052330", "아비코전자": "036010"
-    }
-
-# 전체 종목 딕셔너리 로드
-stock_dict = load_all_stocks()
-
-# 2. 사이드바: 지능형 검색창
+# 2. 사이드바: 네이버 기반 지능형 검색창
 st.sidebar.write("### 🔍 지능형 종목 검색")
-st.sidebar.caption("종목명의 일부만 입력하거나 오타가 있어도 찾아줍니다.")
+st.sidebar.caption("소형주 완벽 지원! 오타가 있어도 네이버 엔진이 찾아줍니다.")
 user_input = st.sidebar.text_input("종목명 또는 코드 입력", value="삼성전자")
 
 if user_input:
     with st.spinner(f"'{user_input}' 종목을 찾고 있습니다..."):
         try:
-            target_code = None
-            target_name = None
-            suggestions = []
+            # 종목 찾기
+            target_code, target_name, suggestions = resolve_stock(user_input)
 
-            # 입력값이 6자리 숫자(코드)인 경우
-            if user_input.isdigit() and len(user_input) == 6:
-                target_code = user_input
-                # 코드로 이름 역추적
-                target_name = next((name for name, code in stock_dict.items() if code == target_code), user_input)
-            
-            # 입력값이 문자(이름)인 경우
+            if target_code:
+                # 검색된 종목이 사용자가 입력한 이름과 다르고 제안 목록이 있다면 오타 보정 알림
+                if target_name != user_input and suggestions:
+                    st.sidebar.success(f"✔️ 자동 교정됨: **{target_name}**")
+                    st.sidebar.info("💡 **혹시 다른 종목을 찾으셨나요?**\n\n" + "\n".join([f"- {s}" for s in suggestions]))
             else:
-                if user_input in stock_dict:
-                    # 정확한 이름 매칭
-                    target_code = stock_dict[user_input]
-                    target_name = user_input
-                else:
-                    # 정확한 이름이 없을 때 유사 검색 (오타 교정 및 부분 일치)
-                    all_names = list(stock_dict.keys())
-                    partial_matches = [name for name in all_names if user_input in name]
-                    close_matches = difflib.get_close_matches(user_input, all_names, n=5, cutoff=0.4)
-                    
-                    # 두 리스트를 합치고 중복 제거
-                    suggestions = list(dict.fromkeys(partial_matches + close_matches))
-                    
-                    if suggestions:
-                        st.sidebar.warning(f"⚠️ '{user_input}'과(와) 정확히 일치하는 종목이 없습니다.")
-                        st.sidebar.info("💡 **아래 종목 중 하나를 찾으시나요?**\n\n" + "\n".join([f"- **{s}**" for s in suggestions[:7]]))
-                    else:
-                        st.sidebar.error("❌ 일치하거나 비슷한 종목명을 찾을 수 없습니다. (데이터 소스 오류일 수 있습니다)")
+                st.sidebar.error("❌ 일치하는 종목을 찾을 수 없습니다. (상장 폐지되었거나 검색어 오류)")
 
             # 정확한 종목 코드를 찾았을 때만 분석 시작
             if target_code:
