@@ -2,3 +2,7 @@ streamlit
 finance-datareader
 beautifulsoup4
 plotly
+mojito
+pandas
+plotly
+streamlit
