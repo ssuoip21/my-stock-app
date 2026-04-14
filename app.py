@@ -7,91 +7,68 @@ from datetime import datetime, timedelta
 import urllib.parse
 import xml.etree.ElementTree as ET
 import numpy as np
-import pandas as pd
-import difflib
 
 # 1. 앱 기본 설정
 st.set_page_config(page_title="주식 검색기", layout="wide")
 st.title("📑 통합 보고서")
 
-# [핵심 강화] 3중 방어막이 적용된 종목 리스트 로더
-@st.cache_data(ttl=86400)
-def load_stock_list():
-    # Plan A: 기본 KRX 전체 조회
+# [최종 해결책] 네이버 금융 자동완성 API를 활용한 초고속 검색
+@st.cache_data(ttl=3600)
+def search_stock_naver(query):
+    # 네이버 검색창과 동일한 원리로 빠르고 차단 없이 종목을 찾아옵니다.
+    url = f"https://ac.finance.naver.com/ac?q={urllib.parse.quote(query)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8"
     try:
-        df = fdr.StockListing('KRX')
-        if df is not None and not df.empty and 'Name' in df.columns:
-            return df[['Code', 'Name']]
-    except:
-        pass
-
-    # Plan B: 코스피, 코스닥 개별 조회 후 합치기 (종종 차단을 피해감)
-    try:
-        df_kospi = fdr.StockListing('KOSPI')
-        df_kosdaq = fdr.StockListing('KOSDAQ')
-        df_combined = pd.concat([df_kospi, df_kosdaq])
-        if not df_combined.empty and 'Name' in df_combined.columns:
-            return df_combined[['Code', 'Name']]
-    except:
-        pass
-
-    # Plan C: 한국거래소 KIND 공식 포털 우회 접속 (가장 강력한 백업)
-    try:
-        url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
-        df_html = pd.read_html(response.text, header=0)[0]
-        # KIND 데이터는 코드가 '5930'처럼 나올 수 있어 6자리 '005930'으로 맞춰줌
-        df_html['종목코드'] = df_html['종목코드'].astype(str).str.zfill(6)
-        df_html = df_html[['종목코드', '회사명']].rename(columns={'종목코드': 'Code', '회사명': 'Name'})
-        return df_html
-    except:
-        return pd.DataFrame(columns=['Code', 'Name'])
-
-df_stock_list = load_stock_list()
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(url, headers=headers, timeout=5)
+        data = res.json()
+        items = data.get('items', [[]])[0]
+        results = []
+        for item in items:
+            if len(item) >= 2:
+                results.append({'Name': item[0], 'Code': item[1]})
+        return results
+    except Exception:
+        return []
 
 # 2. 사이드바: 지능형 검색창
 st.sidebar.write("### 🔍 지능형 종목 검색")
-st.sidebar.caption("종목명의 일부만 입력하거나 오타가 있어도 찾아줍니다.")
+st.sidebar.caption("종목명의 일부만 입력해도 똑똑하게 찾아줍니다.")
 user_input = st.sidebar.text_input("종목명을 입력하세요", value="삼성전자")
 
 if user_input:
-    with st.spinner(f"'{user_input}' 종목을 분석하고 있습니다..."):
+    with st.spinner(f"'{user_input}' 종목을 찾고 있습니다..."):
         try:
             target_code = None
             target_name = None
             suggestions = []
 
-            if not df_stock_list.empty:
-                # 1단계: 정확히 일치하는 이름 찾기
-                exact_match = df_stock_list[df_stock_list['Name'] == user_input]
-                
-                if not exact_match.empty:
-                    target_code = exact_match['Code'].values[0]
-                    target_name = user_input
-                else:
-                    # 2단계: 유사 검색 및 오타 교정
-                    all_names = df_stock_list['Name'].dropna().tolist()
-                    partial_matches = [name for name in all_names if user_input in name]
-                    close_matches = difflib.get_close_matches(user_input, all_names, n=5, cutoff=0.4)
-                    
-                    for name in partial_matches + close_matches:
-                        if name not in suggestions:
-                            suggestions.append(name)
-                    
-                    if suggestions:
-                        st.sidebar.warning(f"⚠️ '{user_input}'과(와) 정확히 일치하는 종목이 없습니다.")
-                        st.sidebar.info("💡 **혹시 아래 종목을 찾으시나요?**\n\n" + "\n".join([f"- **{s}**" for s in suggestions[:7]]))
-                    else:
-                        st.sidebar.error("❌ 일치하거나 비슷한 종목명을 찾을 수 없습니다.")
+            # 입력값이 6자리 숫자(코드)인 경우
+            if user_input.isdigit() and len(user_input) == 6:
+                target_code = user_input
+                target_name = user_input
+                # 코드로 이름 찾기 시도
+                search_res = search_stock_naver(user_input)
+                if search_res:
+                    target_name = search_res[0]['Name']
+            
+            # 입력값이 문자(이름)인 경우
             else:
-                st.sidebar.error("거래소 서버 연결이 모두 지연되고 있습니다. '005930'과 같은 6자리 코드를 직접 입력해 주세요.")
-                # 최후의 수단: 코드가 직접 입력되었을 때 통과시킴
-                if user_input.isdigit() and len(user_input) == 6:
-                    target_code = user_input
-                    target_name = user_input
+                search_res = search_stock_naver(user_input)
+                if search_res:
+                    # 정확히 일치하는 이름이 있는지 확인
+                    exact_match = [s for s in search_res if s['Name'] == user_input]
+                    if exact_match:
+                        target_code = exact_match[0]['Code']
+                        target_name = exact_match[0]['Name']
+                    else:
+                        # 정확한 이름이 없으면 비슷한 결과들을 제안
+                        suggestions = [s['Name'] for s in search_res]
+                        st.sidebar.warning(f"⚠️ '{user_input}'과(와) 정확히 일치하는 종목이 없습니다.")
+                        st.sidebar.info("💡 **아래 종목 중 하나를 찾으시나요?**\n\n" + "\n".join([f"- **{s}**" for s in suggestions[:7]]))
+                else:
+                    st.sidebar.error("❌ 일치하거나 비슷한 종목명을 찾을 수 없습니다.")
 
-            # 분석 시작
+            # 정확한 종목 코드를 찾았을 때만 분석 시작
             if target_code:
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 now = datetime.now()
@@ -136,7 +113,7 @@ if user_input:
                         st.divider()
                         st.info(f"💡 {opinion}")
 
-                    # --- 표 스타일 ---
+                    # --- 표 스타일 지정 (가운데/우측 정렬) ---
                     table_style = """
                     <style>
                         .custom-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border: 1px solid #ddd; }
@@ -191,4 +168,4 @@ if user_input:
                     st.markdown(a_html + "</tbody></table>", unsafe_allow_html=True)
 
         except Exception as e:
-            st.error(f"⚠️ 데이터를 불러오는 중 일시적인 문제가 발생했습니다. (사유: {e})")
+            st.error(f"⚠️ 데이터를 분석하는 중 문제가 발생했습니다. (사유: {e})")
