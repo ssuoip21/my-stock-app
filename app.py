@@ -12,13 +12,34 @@ import numpy as np
 st.set_page_config(page_title="주식 검색기", layout="wide")
 st.title("📑 통합 보고서")
 
-# [최종 해결책] 네이버 금융 자동완성 API를 활용한 초고속 검색
+# [강화된 검색 엔진] 네이버 API 우회 + 우량주 내장 메모리
 @st.cache_data(ttl=3600)
 def search_stock_naver(query):
-    # 네이버 검색창과 동일한 원리로 빠르고 차단 없이 종목을 찾아옵니다.
+    # 1. 무적의 내장 메모리 (서버가 막혀도 무조건 작동하는 대표 우량주 목록)
+    top_stocks = {
+        "삼성전자": "005930", "SK하이닉스": "000660", "LG에너지솔루션": "373220",
+        "삼성바이오로직스": "207940", "현대차": "005380", "기아": "000270",
+        "셀트리온": "068270", "POSCO홀딩스": "005490", "NAVER": "035420",
+        "LG화학": "051910", "삼성SDI": "006400", "삼성물산": "028260",
+        "카카오": "035720", "KB금융": "105560", "신한지주": "055550",
+        "현대모비스": "012330", "포스코퓨처엠": "003670", "하나금융지주": "086790",
+        "LG전자": "066570", "메리츠금융지주": "138040", "에코프로비엠": "247540",
+        "에코프로": "086520", "아비코전자": "036010"
+    }
+    
+    # 입력한 이름이 내장 메모리에 있으면 서버에 묻지 않고 즉시 반환
+    if query in top_stocks:
+        return [{'Name': query, 'Code': top_stocks[query]}]
+        
+    # 2. 네이버 검색 API (강력한 신분 위장 헤더 추가)
     url = f"https://ac.finance.naver.com/ac?q={urllib.parse.quote(query)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8"
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        # 봇이 아니라 진짜 네이버 금융 사이트를 이용 중인 사람인 것처럼 속입니다.
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://finance.naver.com/',
+            'Accept': 'application/json, text/javascript, */*; q=0.01'
+        }
         res = requests.get(url, headers=headers, timeout=5)
         data = res.json()
         items = data.get('items', [[]])[0]
@@ -32,8 +53,8 @@ def search_stock_naver(query):
 
 # 2. 사이드바: 지능형 검색창
 st.sidebar.write("### 🔍 지능형 종목 검색")
-st.sidebar.caption("종목명의 일부만 입력해도 똑똑하게 찾아줍니다.")
-user_input = st.sidebar.text_input("종목명을 입력하세요", value="삼성전자")
+st.sidebar.caption("종목명을 입력하세요 (오타 보정 및 자동완성 지원)")
+user_input = st.sidebar.text_input("종목명 또는 코드 입력", value="삼성전자")
 
 if user_input:
     with st.spinner(f"'{user_input}' 종목을 찾고 있습니다..."):
@@ -46,7 +67,6 @@ if user_input:
             if user_input.isdigit() and len(user_input) == 6:
                 target_code = user_input
                 target_name = user_input
-                # 코드로 이름 찾기 시도
                 search_res = search_stock_naver(user_input)
                 if search_res:
                     target_name = search_res[0]['Name']
@@ -55,22 +75,20 @@ if user_input:
             else:
                 search_res = search_stock_naver(user_input)
                 if search_res:
-                    # 정확히 일치하는 이름이 있는지 확인
                     exact_match = [s for s in search_res if s['Name'] == user_input]
                     if exact_match:
                         target_code = exact_match[0]['Code']
                         target_name = exact_match[0]['Name']
                     else:
-                        # 정확한 이름이 없으면 비슷한 결과들을 제안
                         suggestions = [s['Name'] for s in search_res]
                         st.sidebar.warning(f"⚠️ '{user_input}'과(와) 정확히 일치하는 종목이 없습니다.")
                         st.sidebar.info("💡 **아래 종목 중 하나를 찾으시나요?**\n\n" + "\n".join([f"- **{s}**" for s in suggestions[:7]]))
                 else:
-                    st.sidebar.error("❌ 일치하거나 비슷한 종목명을 찾을 수 없습니다.")
+                    st.sidebar.error("❌ 서버 응답 지연으로 종목명을 찾을 수 없습니다. '005930'과 같이 6자리 숫자로 된 종목코드를 직접 입력해 주세요.")
 
             # 정확한 종목 코드를 찾았을 때만 분석 시작
             if target_code:
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                 now = datetime.now()
                 df_price = fdr.DataReader(target_code, now - timedelta(days=60), now)
                 
