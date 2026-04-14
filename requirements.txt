@@ -1,4 +1,4 @@
-mojito
+mojito2
 pandas
 plotly
 streamlit
