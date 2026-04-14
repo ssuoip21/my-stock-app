@@ -13,42 +13,52 @@ import pandas as pd
 st.set_page_config(page_title="주식 검색기", layout="wide")
 st.title("📑 통합 보고서")
 
-# 2. 사이드바: 종목 입력 및 비상 검색 모드
-st.sidebar.info("💡 종목명 검색이 안 될 경우 '005930'처럼 숫자로 된 종목코드를 직접 입력해 보세요.")
-item_input = st.sidebar.text_input("종목명 또는 6-digit 코드를 입력하세요", value="삼성전자")
-
-# 데이터 수집 함수 (캐싱 적용으로 서버 부하 감소)
-@st.cache_data(ttl=3600)
-def get_stock_list():
+# [개선] 거래소 종목 리스트를 미리 불러와서 캐싱합니다 (속도 향상)
+@st.cache_data(ttl=86400) # 하루 동안 저장
+def load_stock_list():
     try:
-        return fdr.StockListing('KRX')
+        # KRX, KOSPI, KOSDAQ 종목 전체 리스트
+        return fdr.StockListing('KRX')[['Code', 'Name']]
     except:
         return pd.DataFrame()
 
-if item_input:
-    with st.spinner(f"'{item_input}'의 데이터를 분석 중입니다..."):
+df_stock_list = load_stock_list()
+
+# 2. 사이드바: 종목명 또는 코드 입력
+st.sidebar.write("### 🔍 종목 검색")
+user_input = st.sidebar.text_input("종목명(예: 삼성전자) 또는 코드(005930)를 입력하세요", value="삼성전자")
+
+if user_input:
+    with st.spinner(f"'{user_input}'의 데이터를 분석 중입니다..."):
         try:
-            code = None
-            # 입력값이 숫자로만 된 6자리 코드인 경우
-            if item_input.isdigit() and len(item_input) == 6:
-                code = item_input
-                item_name = item_input # 이름 대신 코드로 표시
+            target_code = None
+            target_name = None
+
+            # [핵심 로직] 입력값이 코드인지 이름인지 판단
+            if user_input.isdigit() and len(user_input) == 6:
+                # 6자리 숫자라면 코드로 간주
+                target_code = user_input
+                # 이름 찾기 시도
+                match = df_stock_list[df_stock_list['Code'] == target_code]
+                target_name = match['Name'].values[0] if not match.empty else target_code
             else:
-                # 종목명으로 코드 찾기
-                df_list = get_stock_list()
-                if not df_list.empty:
-                    target = df_list[df_list['Name'] == item_input]
-                    if not target.empty:
-                        code = target['Code'].values[0]
-                        item_name = item_input
-                
-            if code:
+                # 이름으로 간주하고 코드 찾기 시도
+                match = df_stock_list[df_stock_list['Name'] == user_input]
+                if not match.empty:
+                    target_code = match['Code'].values[0]
+                    target_name = user_input
+                else:
+                    st.sidebar.warning("⚠️ 정확한 종목명을 찾을 수 없습니다.")
+
+            if target_code:
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 now = datetime.now()
-                # 가격 데이터 수집
-                df_price = fdr.DataReader(code, now - timedelta(days=60), now)
+                
+                # 데이터 수집
+                df_price = fdr.DataReader(target_code, now - timedelta(days=60), now)
                 
                 if not df_price.empty:
+                    # 지표 계산
                     df_price['MA5'] = df_price['Close'].rolling(window=5).mean()
                     df_price['MA20'] = df_price['Close'].rolling(window=20).mean()
                     df_recent = df_price.tail(10)
@@ -58,12 +68,13 @@ if item_input:
                     prev_p = int(df_recent['Close'].iloc[-2])
                     ma20_curr = df_recent['MA20'].iloc[-1]
                     
+                    # AI 예측 (단기)
                     X = np.arange(len(df_recent))
                     y = df_recent['Close'].values
                     coef = np.polyfit(X, y, 1)
                     future_p = int(coef[0] * (len(df_recent) + 3) + coef[1])
 
-                    # AI 의견
+                    # AI 투자 의견
                     if current_p > ma20_curr and future_p > current_p:
                         opinion_text = "AI 의견: **매수** - 추세 상단 안착 및 상승 에너지 관측"
                     elif current_p < ma20_curr and future_p < current_p:
@@ -71,10 +82,10 @@ if item_input:
                     else:
                         opinion_text = "AI 의견: **관망** - 방향성 결정 전 중립 흐름 유지"
 
-                    # --- 화면 레이아웃 시작 ---
+                    # --- 화면 레이아웃 ---
                     col1, col2 = st.columns([3, 1])
                     with col1:
-                        st.subheader(f"📊 {item_name}({code}) 분석 차트")
+                        st.subheader(f"📊 {target_name}({target_code}) 분석 차트")
                         x_dates = df_recent.index.strftime('%Y-%m-%d')
                         fig = go.Figure()
                         fig.add_trace(go.Candlestick(x=x_dates, open=df_recent['Open'], high=df_recent['High'], low=df_recent['Low'], close=df_recent['Close'], name='주가', increasing_line_color='#FF4136', decreasing_line_color='#0074D9'))
@@ -92,7 +103,7 @@ if item_input:
                         st.divider()
                         st.info(f"💡 {opinion_text}")
 
-                    # --- 스타일 및 하단 섹션 ---
+                    # --- 하단 표 디자인 (중앙/우측 정렬) ---
                     table_style = """
                     <style>
                         .custom-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border: 1px solid #ddd; }
@@ -106,7 +117,7 @@ if item_input:
 
                     st.divider()
                     st.subheader("📈 10거래일 투자자별 순매수 동향")
-                    frgn_url = f"https://finance.naver.com/item/frgn.naver?code={code}"
+                    frgn_url = f"https://finance.naver.com/item/frgn.naver?code={target_code}"
                     frgn_res = requests.get(frgn_url, headers=headers); frgn_res.encoding = 'euc-kr'
                     rows = BeautifulSoup(frgn_res.text, 'html.parser').select('table.type2 tr')
                     s_html = table_style + '<table class="custom-table"><thead><tr><th>날짜</th><th>개인</th><th>외국인</th><th>기관</th></tr></thead><tbody>'
@@ -125,7 +136,7 @@ if item_input:
 
                     st.divider()
                     st.subheader("📰 최신 주요 뉴스")
-                    rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(item_name)}&hl=ko&gl=KR&ceid=KR:ko"
+                    rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(target_name)}&hl=ko&gl=KR&ceid=KR:ko"
                     root = ET.fromstring(requests.get(rss_url).content)
                     for i, item in enumerate(root.findall('.//item')[:5]):
                         st.markdown(f"{i+1}. [{item.find('title').text}]({item.find('link').text})")
@@ -147,8 +158,5 @@ if item_input:
                     st.markdown(a_html + "</tbody></table>", unsafe_allow_html=True)
                 else:
                     st.warning("데이터를 가져올 수 없는 종목입니다.")
-            else:
-                st.error("거래소 서버 응답 지연으로 종목명을 찾을 수 없습니다. 왼쪽 사이드바에 '005930'과 같은 종목코드를 직접 입력해 보세요!")
-
         except Exception as e:
-            st.error(f"데이터 수집 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. ({e})")
+            st.error(f"데이터를 불러오는 중 문제가 발생했습니다. (오류: {e})")
