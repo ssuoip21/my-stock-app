@@ -17,7 +17,7 @@ ACC_NO_PS = st.secrets["kis"]["acc_no_ps"]
 # 2. 한국투자증권 API 연결 (모든 종목 가능)
 @st.cache_resource
 def get_broker():
-    return mojito.KoreaStock(
+    return mojito.KoreaInvestment( ... )
         api_key=APP_KEY,
         api_secret=APP_SECRET,
         acc_no=f"{ACC_NO}-{ACC_NO_PS}",
