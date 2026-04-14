@@ -2,3 +2,5 @@ mojito2
 pandas
 plotly
 streamlit
+requests
+beautifulsoup4
