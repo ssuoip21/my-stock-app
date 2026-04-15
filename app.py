@@ -14,7 +14,10 @@ import FinanceDataReader as fdr
 # 1. 앱 설정 (다크모드 완벽 대응 스타일)
 st.set_page_config(page_title="스마트 주식 비서 Pro", layout="wide")
 
-# [수정] 다크모드 표(Table) 글씨 색상 가시성 확보를 위한 CSS 추가
+# [복구] 메인 타이틀
+st.title("📈 스마트 주식 비서 Pro")
+
+# 다크모드 표(Table) 글씨 색상 가시성 확보를 위한 CSS 추가
 st.markdown("""
     <style>
     .main .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
@@ -134,14 +137,11 @@ if target_code:
                 c3.metric("시가총액", fund['시총'])
                 c4.metric("PER / PBR", f"{fund['PER']} / {fund['PBR']}")
 
-            # [수정] 차트 범위 최적화 (마이너스 값 제거)
+            # 차트 범위 최적화 (마이너스 값 제거)
             view = df.tail(30)
-            # Y축의 최소값이 무조건 0보다 크거나 같도록 max(0, ...) 적용
             min_y = max(0, view[['stck_lwpr', 'Lower_BB']].min().min() * 0.98)
             max_y = view[['stck_hgpr', 'Upper_BB']].max().max() * 1.02
             y_range = [min_y, max_y]
-            
-            # 거래량 차트도 현재 보이는 30일치 데이터 기준의 최대값으로 최적화
             vol_max = view['acml_vol'].max()
 
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
@@ -160,10 +160,8 @@ if target_code:
             
             fig.update_layout(
                 height=500, template='plotly_white', margin=dict(l=0, r=0, t=10, b=0), dragmode='pan',
-                # [수정] 범례(Legend)를 차트 영역 상단 내부로 겹치게(Overlay) 이동
                 legend=dict(orientation="h", yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(128,128,128,0.1)"),
                 yaxis=dict(range=y_range, side='right', showgrid=True, gridcolor='rgba(128,128,128,0.1)'),
-                # [수정] 거래량 Y축 범위를 0 이상으로 고정
                 yaxis2=dict(side='right', showgrid=False, range=[0, vol_max * 1.1]),
                 paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
             )
@@ -231,4 +229,27 @@ if target_code:
                     count = 0
                     for r in rows:
                         tds = r.select('td')
-                        if len(tds) == 9 and tds[0].text.
+                        # [복구 및 수정 완료] 이전에 짤렸던 코드 부분을 완벽하게 복구했습니다.
+                        if len(tds) == 9 and tds[0].text.strip():
+                            fv, iv = int(tds[6].text.strip().replace(',','')), int(tds[5].text.strip().replace(',',''))
+                            pv = -(fv + iv)
+                            def s(v): return f'color:{"#FF4136" if v>0 else "#0074D9" if v<0 else "inherit"}'
+                            t_html += f'<tr><td>{tds[0].text[5:]}</td><td style="{s(pv)}">{pv:+,}</td><td style="{s(fv)}">{fv:+,}</td><td style="{s(iv)}">{iv:+,}</td></tr>'
+                            count += 1
+                            if count >= 10: break
+                    t_html += '</table></div>'
+                    st.markdown(t_html, unsafe_allow_html=True)
+                except Exception as e: 
+                    st.write("데이터 갱신 지연으로 수급 정보를 일시적으로 불러올 수 없습니다.")
+
+            with t3:
+                try:
+                    enc = urllib.parse.quote(target_name)
+                    rss = ET.fromstring(requests.get(f"https://news.google.com/rss/search?q={enc}&hl=ko&gl=KR&ceid=KR:ko").content)
+                    for item in rss.findall('.//item')[:5]:
+                        st.markdown(f"🔹 **[{item.find('title').text}]({item.find('link').text})**")
+                        st.caption(f"📅 {item.find('pubDate').text[:16]}")
+                except: st.write("뉴스 로딩 실패")
+
+        except Exception as e: 
+            st.error(f"데이터 분석 중 오류 발생: {e}")
