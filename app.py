@@ -99,19 +99,23 @@ if target_code:
             for col in ['stck_clpr', 'stck_oprc', 'stck_hgpr', 'stck_lwpr']:
                 df[col] = pd.to_numeric(df[col])
             
+            # [중요 수정] 데이터를 과거에서 최신 순(오름차순)으로 정렬하여 차트 방향 정상화
+            df = df.sort_values(by='date').reset_index(drop=True)
+            
             # 지표 계산
             df['MA5'] = df['stck_clpr'].rolling(window=5).mean()
             df['MA20'] = df['stck_clpr'].rolling(window=20).mean()
 
-            # [C] Y축 가변 범위 및 초기 10일 줌 설정
-            view_limit = df.tail(30) # 최근 30일 데이터 기준 스케일링
+            # [C] Y축 가변 범위 및 초기 줌 설정 (정렬이 수정되어 최신 30일이 정확히 반영됨)
+            view_limit = df.tail(30) # 최신 30일 데이터 기준 스케일링
             min_y = view_limit['stck_lwpr'].min()
             max_y = view_limit['stck_hgpr'].max()
             y_margin = (max_y - min_y) * 0.05
             y_range = [min_y - y_margin, max_y + y_margin]
 
+            # 초기 화면 범위를 최근 20일로 설정하여 더 보기 편하게 수정
             last_date = df['date'].iloc[-1]
-            zoom_start_date = df['date'].iloc[-10] if len(df) >= 10 else df['date'].iloc[0]
+            zoom_start_date = df['date'].iloc[-20] if len(df) >= 20 else df['date'].iloc[0]
 
             # --- 화면 레이아웃 ---
             st.write(f"### 📈 {target_name} ({target_code})")
@@ -173,24 +177,35 @@ if target_code:
                 except: st.write("수급 데이터 일시 오류")
 
             with tab2:
+                # [수정] 뉴스 기사의 발행일자(pubDate)를 가져와서 추가
                 try:
                     enc_name = urllib.parse.quote(target_name)
                     rss_url = f"https://news.google.com/rss/search?q={enc_name}&hl=ko&gl=KR&ceid=KR:ko"
                     root = ET.fromstring(requests.get(rss_url).content)
                     for item in root.findall('.//item')[:6]:
-                        st.markdown(f"🔹 [{item.find('title').text}]({item.find('link').text})")
+                        title = item.find('title').text
+                        link = item.find('link').text
+                        pub_date = item.find('pubDate').text
+                        
+                        # 보기 좋게 날짜 자르기 (예: 'Wed, 15 Apr 2026')
+                        date_str = pub_date[:16]
+                        st.markdown(f"🔹 **[{title}]({link})**")
+                        st.caption(f"📅 {date_str}")
                 except: st.write("뉴스를 불러올 수 없습니다.")
 
             with tab3:
+                # [수정] 투자 전략을 다시 표(DataFrame) 형식으로 상세하게 복구
                 volatility = df['stck_clpr'].pct_change().std()
                 v_f = volatility * 100
                 st.write(f"**현재 변동성:** {v_f:.2f}%")
+                
                 strat = {
-                    "단기전략": [int(curr_p*(1+0.05*v_f)), int(curr_p*0.96)],
-                    "중장기": [int(curr_p*(1+0.20*v_f)), int(curr_p*0.85)]
+                    "초단기 (3일)": [int(curr_p*0.99), int(curr_p*(1+0.02*v_f)), int(curr_p*0.97)],
+                    "단기 (1개월)": [int(curr_p*0.97), int(curr_p*(1+0.05*v_f)), int(curr_p*0.93)],
+                    "장기 (1년+)": [int(curr_p*0.90), int(curr_p*(1+0.30*v_f)), int(curr_p*0.75)]
                 }
-                for k, v in strat.items():
-                    st.info(f"📍 **{k}** | 목표가: {v[0]:,}원 / 손절가: {v[1]:,}원")
+                s_df = pd.DataFrame(strat, index=["추천 매수가", "목표가", "손절가"])
+                st.table(s_df.style.format("{:,}원"))
 
         except Exception as e:
             st.error(f"데이터 수신 중 오류 발생: {e}")
