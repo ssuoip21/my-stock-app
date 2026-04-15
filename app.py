@@ -39,15 +39,12 @@ def get_broker():
         acc_no=f"{ACC_NO}-{ACC_NO_PS}", mock=False
     )
 
-# [핵심 변경] 한국거래소(KRX) 전체 상장 종목 리스트 자동 수집
-@st.cache_data(ttl=86400) # 하루에 한 번만 새로고침하여 속도 최적화
+@st.cache_data(ttl=86400) 
 def get_stock_dict():
     try:
         krx_df = fdr.StockListing('KRX')
-        # 종목명: 종목코드 형태의 딕셔너리로 변환
         return dict(zip(krx_df['Name'], krx_df['Code']))
     except:
-        # 혹시라도 실패할 경우를 대비한 비상용 사전
         return {"삼성전자": "005930", "SK하이닉스": "000660"}
 
 broker = get_broker()
@@ -67,7 +64,7 @@ tf_map = {"일봉": "D", "주봉": "W", "월봉": "M"}
 target_code = None
 target_name = None
 
-# [핵심 변경] 향상된 종목 검색 로직 (포함 단어 검색 지원)
+# 종목 검색 로직 
 if user_input:
     if user_input.isdigit() and len(user_input) == 6:
         target_code = user_input
@@ -76,13 +73,11 @@ if user_input:
         target_code = STOCK_DICT[user_input]
         target_name = user_input
     else:
-        # 입력한 단어가 포함된 모든 종목 찾기 (띄어쓰기 무시)
         clean_input = user_input.replace(" ", "")
         matches = [name for name in STOCK_DICT.keys() if clean_input in name.replace(" ", "")]
         
         if matches:
             st.info(f"💡 '{user_input}'(이)가 포함된 종목을 찾았습니다. 아래에서 선택해주세요.")
-            # 찾은 종목들을 드롭다운(선택 상자)으로 보여줌
             selected_match = st.selectbox("정확한 종목 선택", ["여기를 눌러 선택하세요..."] + matches)
             if selected_match != "여기를 눌러 선택하세요...":
                 target_code = STOCK_DICT[selected_match]
@@ -90,7 +85,7 @@ if user_input:
         else:
             st.error("❌ 일치하는 상장 종목이 없습니다. 정확한 이름이나 6자리 코드를 입력해주세요.")
 
-# 4. 메인 리포트 시작 (이하 이전과 동일하게 유지)
+# 4. 메인 리포트 시작
 if target_code:
     with st.spinner(f"{target_name} 데이터 분석 중..."):
         try:
@@ -124,7 +119,8 @@ if target_code:
             
             m1, m2 = st.columns(2)
             m1.metric("현재가", f"{curr_p:,}원", f"{diff:,}원 ({rate:+.2f}%)")
-            m2.write(f"**거래량:** {int(price_resp['acml_vol']):,}주")
+            # [수정된 부분] 거래량도 metric 박스 형태로 출력하여 UI 밸런스를 맞춤
+            m2.metric("거래량", f"{int(price_resp['acml_vol']):,}주")
 
             fig = make_subplots(
                 rows=2, cols=1, shared_xaxes=True, 
@@ -141,80 +137,4 @@ if target_code:
             fig.add_trace(go.Scatter(x=df['date_str'], y=df['MA5'], name='5일선', line=dict(color='orange', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df['date_str'], y=df['MA20'], name='20일선', line=dict(color='purple', width=1)), row=1, col=1)
 
-            vol_colors = np.where(df['stck_clpr'] >= df['stck_oprc'], up_color, down_color)
-            fig.add_trace(go.Bar(
-                x=df['date_str'], y=df['acml_vol'],
-                marker_color=vol_colors, name='거래량'
-            ), row=2, col=1)
-            
-            fig.update_layout(
-                height=550, template='plotly_white', margin=dict(l=0, r=0, t=10, b=0),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                yaxis=dict(range=y_range, fixedrange=False, side='right', showgrid=True, gridcolor='#f0f0f0'),
-                yaxis2=dict(side='right', showgrid=False)
-            )
-            
-            zoom_start = max(0, len(df) - 30)
-            fig.update_xaxes(
-                type='category', 
-                range=[zoom_start, len(df)], 
-                rangeslider_visible=False,
-                showgrid=False
-            )
-
-            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
-
-            st.divider()
-            tab1, tab2, tab3 = st.tabs(["📊 수급동향", "📰 뉴스피드", "🎯 투자전략"])
-            
-            with tab1:
-                try:
-                    h = {'User-Agent': 'Mozilla/5.0'}
-                    n_url = f"https://finance.naver.com/item/frgn.naver?code={target_code}"
-                    n_res = requests.get(n_url, headers=h, timeout=5)
-                    n_res.encoding = 'euc-kr'
-                    rows = BeautifulSoup(n_res.text, 'html.parser').select('table.type2 tr')
-                    t_html = '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12px; text-align:center;">'
-                    t_html += '<tr style="background:#f8f9fa;"><th>날짜</th><th>개인</th><th>외인</th><th>기관</th></tr>'
-                    count = 0
-                    for r in rows:
-                        tds = r.select('td')
-                        if len(tds) == 9 and tds[0].text.strip():
-                            fv, iv = int(tds[6].text.strip().replace(',','')), int(tds[5].text.strip().replace(',',''))
-                            pv = -(fv + iv)
-                            def s(v): return f'color:{"#FF4136" if v>0 else "#0074D9" if v<0 else "black"}'
-                            t_html += f'<tr><td>{tds[0].text[5:]}</td><td style="{s(pv)}">{pv:+,}</td><td style="{s(fv)}">{fv:+,}</td><td style="{s(iv)}">{iv:+,}</td></tr>'
-                            count += 1
-                            if count >= 7: break
-                    st.markdown(t_html + '</table></div>', unsafe_allow_html=True)
-                except: st.write("수급 데이터 일시 오류")
-
-            with tab2:
-                try:
-                    enc_name = urllib.parse.quote(target_name)
-                    rss_url = f"https://news.google.com/rss/search?q={enc_name}&hl=ko&gl=KR&ceid=KR:ko"
-                    root = ET.fromstring(requests.get(rss_url).content)
-                    for item in root.findall('.//item')[:6]:
-                        title = item.find('title').text
-                        link = item.find('link').text
-                        pub_date = item.find('pubDate').text
-                        date_str = pub_date[:16]
-                        st.markdown(f"🔹 **[{title}]({link})**")
-                        st.caption(f"📅 {date_str}")
-                except: st.write("뉴스를 불러올 수 없습니다.")
-
-            with tab3:
-                volatility = df['stck_clpr'].pct_change().std()
-                v_f = volatility * 100
-                st.write(f"**현재 변동성:** {v_f:.2f}%")
-                
-                strat = {
-                    "초단기 (3일)": [int(curr_p*0.99), int(curr_p*(1+0.02*v_f)), int(curr_p*0.97)],
-                    "단기 (1개월)": [int(curr_p*0.97), int(curr_p*(1+0.05*v_f)), int(curr_p*0.93)],
-                    "장기 (1년+)": [int(curr_p*0.90), int(curr_p*(1+0.30*v_f)), int(curr_p*0.75)]
-                }
-                s_df = pd.DataFrame(strat, index=["추천 매수가", "목표가", "손절가"])
-                st.table(s_df.style.format("{:,}원"))
-
-        except Exception as e:
-            st.error(f"데이터 수신 중 오류 발생: {e}")
+            vol_colors = np.where(
