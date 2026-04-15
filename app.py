@@ -64,7 +64,6 @@ tf_map = {"일봉": "D", "주봉": "W", "월봉": "M"}
 target_code = None
 target_name = None
 
-# 종목 검색 로직 
 if user_input:
     if user_input.isdigit() and len(user_input) == 6:
         target_code = user_input
@@ -119,7 +118,6 @@ if target_code:
             
             m1, m2 = st.columns(2)
             m1.metric("현재가", f"{curr_p:,}원", f"{diff:,}원 ({rate:+.2f}%)")
-            # [수정된 부분] 거래량도 metric 박스 형태로 출력하여 UI 밸런스를 맞춤
             m2.metric("거래량", f"{int(price_resp['acml_vol']):,}주")
 
             fig = make_subplots(
@@ -147,7 +145,8 @@ if target_code:
                 height=550, template='plotly_white', margin=dict(l=0, r=0, t=10, b=0),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 yaxis=dict(range=y_range, fixedrange=False, side='right', showgrid=True, gridcolor='#f0f0f0'),
-                yaxis2=dict(side='right', showgrid=False)
+                yaxis2=dict(side='right', showgrid=False),
+                dragmode='pan' # [핵심] 터치 및 드래그 시 확대(Zoom) 대신 화면 이동(Pan) 모드 활성화
             )
             
             zoom_start = max(0, len(df) - 30)
