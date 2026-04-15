@@ -4,3 +4,4 @@ plotly
 streamlit
 requests
 beautifulsoup4
+finance-datareader
