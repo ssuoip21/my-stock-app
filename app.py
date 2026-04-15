@@ -16,7 +16,7 @@ st.set_page_config(page_title="스마트 주식 비서 Pro", layout="wide")
 
 st.title("📈 스마트 주식 비서 Pro")
 
-# 다크모드 표(Table) 글씨 색상 가시성 확보를 위한 CSS 추가
+# [수정] 다크모드 대응 CSS 정교화 (제목칸만 색상을 맞추고, 빨강/파랑 수치는 유지)
 st.markdown("""
     <style>
     .main .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
@@ -25,10 +25,8 @@ st.markdown("""
         border: 1px solid rgba(128, 128, 128, 0.2);
         background-color: rgba(128, 128, 128, 0.05);
     }
-    table { color: inherit !important; }
-    thead tr th { color: inherit !important; background-color: rgba(128, 128, 128, 0.1) !important; font-weight: bold !important; }
-    tbody tr th { color: inherit !important; }
-    td { color: inherit !important; }
+    /* th(표 제목칸)만 강제로 다크모드 대응시키고, td(표 내용칸)의 빨강/파랑 색상은 보호합니다 */
+    th { background-color: rgba(128, 128, 128, 0.1) !important; color: inherit !important; }
     @media (max-width: 640px) { .stTabs [data-baseweb="tab-list"] { gap: 10px; } .stTabs [data-baseweb="tab"] { padding-left: 10px; padding-right: 10px; } }
     </style>
     """, unsafe_allow_html=True)
@@ -135,7 +133,7 @@ if target_code:
                 c3.metric("시가총액", fund['시총'])
                 c4.metric("PER / PBR", f"{fund['PER']} / {fund['PBR']}")
 
-            # 차트 범위 최적화 (마이너스 값 제거)
+            # 차트 범위 최적화
             view = df.tail(30)
             min_y = max(0, view[['stck_lwpr', 'Lower_BB']].min().min() * 0.98)
             max_y = view[['stck_hgpr', 'Upper_BB']].max().max() * 1.02
