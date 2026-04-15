@@ -9,12 +9,11 @@ from bs4 import BeautifulSoup
 import urllib.parse
 import xml.etree.ElementTree as ET
 import numpy as np
-import difflib
+import FinanceDataReader as fdr
 
 # 1. 앱 설정 (모바일 최적화 레이아웃)
 st.set_page_config(page_title="스마트 주식 비서", layout="wide")
 
-# 모바일 가독성을 위한 커스텀 스타일
 st.markdown("""
     <style>
     .main .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
@@ -40,23 +39,25 @@ def get_broker():
         acc_no=f"{ACC_NO}-{ACC_NO_PS}", mock=False
     )
 
-@st.cache_data(ttl=86400)
+# [핵심 변경] 한국거래소(KRX) 전체 상장 종목 리스트 자동 수집
+@st.cache_data(ttl=86400) # 하루에 한 번만 새로고침하여 속도 최적화
 def get_stock_dict():
-    return {
-        "삼성전자": "005930", "SK하이닉스": "000660", "현대차": "005380",
-        "기아": "000270", "NAVER": "035420", "카카오": "035720",
-        "화신정공": "126640", "코텍": "052330", "아비코전자": "036010",
-        "한미반도체": "042700", "에코프로": "086520", "셀트리온": "068270"
-    }
+    try:
+        krx_df = fdr.StockListing('KRX')
+        # 종목명: 종목코드 형태의 딕셔너리로 변환
+        return dict(zip(krx_df['Name'], krx_df['Code']))
+    except:
+        # 혹시라도 실패할 경우를 대비한 비상용 사전
+        return {"삼성전자": "005930", "SK하이닉스": "000660"}
 
 broker = get_broker()
 STOCK_DICT = get_stock_dict()
 
-# 3. 상단 검색 및 설정 (사이드바 제거, 모바일 친화적 구성)
+# 3. 상단 검색 및 설정
 with st.expander("⚙️ 종목 검색 및 설정", expanded=True):
     col1, col2 = st.columns([2, 1])
     with col1:
-        user_input = st.text_input("종목명 또는 코드 입력", value="삼성전자")
+        user_input = st.text_input("종목명 또는 코드 입력 (예: 삼성전기, 009150)", value="삼성전자")
         timeframe = st.radio("차트 주기", ("일봉", "주봉", "월봉"), horizontal=True)
     with col2:
         up_color = st.color_picker("상승 색상 (양봉)", "#FF4136")
@@ -66,7 +67,7 @@ tf_map = {"일봉": "D", "주봉": "W", "월봉": "M"}
 target_code = None
 target_name = None
 
-# 종목 검색 로직
+# [핵심 변경] 향상된 종목 검색 로직 (포함 단어 검색 지원)
 if user_input:
     if user_input.isdigit() and len(user_input) == 6:
         target_code = user_input
@@ -75,24 +76,29 @@ if user_input:
         target_code = STOCK_DICT[user_input]
         target_name = user_input
     else:
-        matches = difflib.get_close_matches(user_input, list(STOCK_DICT.keys()), n=1, cutoff=0.2)
+        # 입력한 단어가 포함된 모든 종목 찾기 (띄어쓰기 무시)
+        clean_input = user_input.replace(" ", "")
+        matches = [name for name in STOCK_DICT.keys() if clean_input in name.replace(" ", "")]
+        
         if matches:
-            st.info(f"💡 혹시 '{matches[0]}' 종목을 찾으시나요?")
-            if st.button(f"'{matches[0]}' 분석하기"):
-                target_code = STOCK_DICT[matches[0]]
-                target_name = matches[0]
+            st.info(f"💡 '{user_input}'(이)가 포함된 종목을 찾았습니다. 아래에서 선택해주세요.")
+            # 찾은 종목들을 드롭다운(선택 상자)으로 보여줌
+            selected_match = st.selectbox("정확한 종목 선택", ["여기를 눌러 선택하세요..."] + matches)
+            if selected_match != "여기를 눌러 선택하세요...":
+                target_code = STOCK_DICT[selected_match]
+                target_name = selected_match
+        else:
+            st.error("❌ 일치하는 상장 종목이 없습니다. 정확한 이름이나 6자리 코드를 입력해주세요.")
 
-# 4. 메인 리포트 시작
+# 4. 메인 리포트 시작 (이하 이전과 동일하게 유지)
 if target_code:
     with st.spinner(f"{target_name} 데이터 분석 중..."):
         try:
-            # [A] 실시간 데이터
             price_resp = broker.fetch_price(target_code)['output']
             curr_p = int(price_resp['stck_prpr'])
             diff = int(price_resp['prdy_vrss'])
             rate = float(price_resp['prdy_ctrt'])
             
-            # [B] 차트 데이터 수신
             end_d = datetime.now().strftime("%Y%m%d")
             start_d = (datetime.now() - timedelta(days=500)).strftime("%Y%m%d")
             chart_res = broker.fetch_ohlcv(target_code, tf_map[timeframe], start_d, end_d)['output2']
@@ -102,36 +108,29 @@ if target_code:
             for col in ['stck_clpr', 'stck_oprc', 'stck_hgpr', 'stck_lwpr', 'acml_vol']:
                 df[col] = pd.to_numeric(df[col])
             
-            # 데이터 정렬 및 빈 공간(휴장일) 제거용 날짜 문자열 생성
             df = df.sort_values(by='date').reset_index(drop=True)
             df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
             
-            # 지표 계산
             df['MA5'] = df['stck_clpr'].rolling(window=5).mean()
             df['MA20'] = df['stck_clpr'].rolling(window=20).mean()
 
-            # Y축 가변 범위 설정
             view_limit = df.tail(30)
             min_y = view_limit['stck_lwpr'].min()
             max_y = view_limit['stck_hgpr'].max()
             y_margin = (max_y - min_y) * 0.05
             y_range = [min_y - y_margin, max_y + y_margin]
 
-            # --- 화면 레이아웃 ---
             st.write(f"### 📈 {target_name} ({target_code})")
             
             m1, m2 = st.columns(2)
             m1.metric("현재가", f"{curr_p:,}원", f"{diff:,}원 ({rate:+.2f}%)")
             m2.write(f"**거래량:** {int(price_resp['acml_vol']):,}주")
 
-            # --- 인터랙티브 차트 (주가 + 거래량 분할) ---
-            # 서브플롯 설정 (1열 2행: 위는 주가, 아래는 거래량)
             fig = make_subplots(
                 rows=2, cols=1, shared_xaxes=True, 
                 vertical_spacing=0.03, row_heights=[0.7, 0.3]
             )
 
-            # 1번 캔들 차트
             fig.add_trace(go.Candlestick(
                 x=df['date_str'], open=df['stck_oprc'], high=df['stck_hgpr'],
                 low=df['stck_lwpr'], close=df['stck_clpr'],
@@ -139,18 +138,15 @@ if target_code:
                 name='주가'
             ), row=1, col=1)
             
-            # 이동평균선
             fig.add_trace(go.Scatter(x=df['date_str'], y=df['MA5'], name='5일선', line=dict(color='orange', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df['date_str'], y=df['MA20'], name='20일선', line=dict(color='purple', width=1)), row=1, col=1)
 
-            # 2번 거래량 막대그래프 (양봉/음봉 색상 맞춤)
             vol_colors = np.where(df['stck_clpr'] >= df['stck_oprc'], up_color, down_color)
             fig.add_trace(go.Bar(
                 x=df['date_str'], y=df['acml_vol'],
                 marker_color=vol_colors, name='거래량'
             ), row=2, col=1)
             
-            # 차트 레이아웃 업데이트 (빈 공간 제거 및 줌 설정)
             fig.update_layout(
                 height=550, template='plotly_white', margin=dict(l=0, r=0, t=10, b=0),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -158,7 +154,6 @@ if target_code:
                 yaxis2=dict(side='right', showgrid=False)
             )
             
-            # [중요] X축을 Category로 변경하여 휴장일 틈새 제거 & 최근 30일로 줌
             zoom_start = max(0, len(df) - 30)
             fig.update_xaxes(
                 type='category', 
@@ -169,7 +164,6 @@ if target_code:
 
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
 
-            # --- 하단 상세 정보 (탭) ---
             st.divider()
             tab1, tab2, tab3 = st.tabs(["📊 수급동향", "📰 뉴스피드", "🎯 투자전략"])
             
