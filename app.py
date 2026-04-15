@@ -130,7 +130,6 @@ else:
 
 # 6. 메인 분석창
 if target_code:
-    # 관심종목 추가/해제 버튼
     is_fav = target_name in st.session_state.favorites
     if st.button("⭐ 관심종목 추가/해제", type="primary" if is_fav else "secondary"):
         if is_fav: st.session_state.favorites.remove(target_name)
@@ -138,7 +137,7 @@ if target_code:
         st.rerun()
 
     with st.spinner("AI 분석 리포트 생성 중..."):
-        try: # <--- 여기서부터 try 블록 시작 (이전 코드에서 누락되었던 부분)
+        try:
             price_resp = broker.fetch_price(target_code)['output']
             curr_p = int(price_resp['stck_prpr'])
             df = fetch_and_calc(target_code, timeframe)
@@ -166,37 +165,68 @@ if target_code:
             fig.update_xaxes(type='category', range=[len(df)-30, len(df)], rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-            # 하단 분석 탭
-            t1, t2, t3 = st.tabs(["🎯 투자 전략 & AI 진단", "🔬 기술 지표 설명", "📰 뉴스"])
+            # 하단 분석 탭 (3개로 정리)
+            t1, t2, t3 = st.tabs(["📊 수급동향", "🎯 투자전략 & 분석", "📰 뉴스피드"])
             
             with t1:
-                volatility = df['stck_clpr'].pct_change().std() * 100
-                strat = {
-                    "목표가 (1차)": [int(curr_p*(1+0.05))],
-                    "목표가 (2차)": [int(curr_p*(1+0.12))],
-                    "손절가": [int(curr_p*0.94)]
-                }
-                st.table(pd.DataFrame(strat, index=["추천 가격"]).style.format("{:,}원"))
+                try:
+                    # 안정적인 접속을 위해 User-Agent 추가
+                    h = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                    n_url = f"https://finance.naver.com/item/frgn.naver?code={target_code}"
+                    n_res = requests.get(n_url, headers=h, timeout=5)
+                    n_res.encoding = 'euc-kr'
+                    rows = BeautifulSoup(n_res.text, 'html.parser').select('table.type2 tr')
+                    t_html = '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12px; text-align:center;">'
+                    t_html += '<tr style="border-bottom: 1px solid gray;"><th>날짜</th><th>개인</th><th>외국인</th><th>기관</th></tr>'
+                    count = 0
+                    for r in rows:
+                        tds = r.select('td')
+                        if len(tds) == 9 and tds[0].text.strip():
+                            fv, iv = int(tds[6].text.strip().replace(',','')), int(tds[5].text.strip().replace(',',''))
+                            pv = -(fv + iv)
+                            def s(v): return f'color:{"#FF4136" if v>0 else "#0074D9" if v<0 else "inherit"}'
+                            # 날짜 형식은 04.14 처럼 짧게 표시되도록 [5:] 유지
+                            t_html += f'<tr><td>{tds[0].text[5:]}</td><td style="{s(pv)}">{pv:+,}</td><td style="{s(fv)}">{fv:+,}</td><td style="{s(iv)}">{iv:+,}</td></tr>'
+                            count += 1
+                            if count >= 10: break # 최근 10거래일로 확장
+                    st.markdown(t_html + '</table></div>', unsafe_allow_html=True)
+                except Exception as e: 
+                    st.write("데이터 갱신 지연으로 수급 정보를 일시적으로 불러올 수 없습니다.")
+
+            with t2:
+                # 4단계 투자 전략
+                volatility = df['stck_clpr'].pct_change().std()
+                v_f = volatility * 100
+                st.write(f"**현재 변동성:** {v_f:.2f}%")
                 
-                # AI 종합 판단 로직
+                strat = {
+                    "초단기 (3일)": [int(curr_p*0.99), int(curr_p*(1+0.02*v_f)), int(curr_p*0.97)],
+                    "단기 (1개월)": [int(curr_p*0.97), int(curr_p*(1+0.05*v_f)), int(curr_p*0.93)],
+                    "중기 (6개월)": [int(curr_p*0.93), int(curr_p*(1+0.15*v_f)), int(curr_p*0.85)],
+                    "장기 (1년)": [int(curr_p*0.90), int(curr_p*(1+0.30*v_f)), int(curr_p*0.75)]
+                }
+                s_df = pd.DataFrame(strat, index=["추천 매수가", "목표가", "손절가"])
+                st.table(s_df.style.format("{:,}원"))
+                
+                # AI 종합 진단
                 rsi = df['RSI'].iloc[-1]
-                per_val = float(fund['PER'].replace(',','')) if fund['PER'] != 'N/A' and fund['PER'] != '-' else 20
+                per_val = float(fund['PER'].replace(',','')) if fund['PER'] not in ['N/A', '-'] else 20
+                bb_width = (df['Upper_BB'].iloc[-1] - df['Lower_BB'].iloc[-1]) / df['MA20'].iloc[-1]
                 
                 st.subheader("🤖 AI 종합 분석 결과")
                 analysis_text = f"**{target_name}**에 대한 종합 진단입니다. "
-                if rsi > 70: analysis_text += "현재 RSI가 70을 초과하여 단기적 과열 구간에 진입했습니다. 신규 매수는 신중해야 합니다. "
-                elif rsi < 30: analysis_text += "RSI가 30 미만으로 과매도 상태입니다. 기술적 반등 가능성이 높습니다. "
-                else: analysis_text += "수급 강도는 정상 범위 내에 있습니다. "
+                if rsi > 70: analysis_text += f"현재 RSI({rsi:.1f})가 70을 초과하여 단기적 과열 구간에 진입했습니다. 신규 매수는 신중해야 합니다. "
+                elif rsi < 30: analysis_text += f"RSI({rsi:.1f})가 30 미만으로 과매도 상태입니다. 기술적 반등 가능성이 높습니다. "
+                else: analysis_text += f"수급 강도(RSI {rsi:.1f})는 정상 범위 내에 있습니다. "
                 
                 if per_val < 10: analysis_text += "밸류에이션(PER) 측면에서 매우 저평가되어 있어 장기 투자 매력이 높습니다. "
-                
-                bb_width = (df['Upper_BB'].iloc[-1] - df['Lower_BB'].iloc[-1]) / df['MA20'].iloc[-1]
                 if bb_width < 0.05: analysis_text += "볼린저 밴드 폭이 매우 좁아졌습니다. 곧 큰 변동성이 예상되니 주의 깊게 관찰하세요."
                 
                 st.info(analysis_text)
 
-            with t2:
-                st.write("#### 📖 초보자를 위한 용어 사전")
+                # 용어 설명 (합치기)
+                st.divider()
+                st.write("#### 📖 초보자를 위한 기술적 지표 및 용어 설명")
                 st.write("**PER/PBR:** 기업 가치 대비 주가 수준을 나타냅니다. 숫자가 낮을수록 회사가치에 비해 주가가 저렴하다는 뜻입니다.")
                 st.write("**RSI (상대강도지수):** 최근 주가 상승과 하락의 강도를 0~100으로 나타냅니다. 보통 70 이상이면 너무 많이 올랐다(과매수), 30 이하이면 너무 많이 떨어졌다(과매도)고 판단합니다.")
                 st.write("**볼린저 밴드:** 주가가 움직이는 가상의 도로(통로)입니다. 차트의 파란색 띠 부분을 말하며, 이 통로가 좁아지면 조만간 주가가 위나 아래로 크게 움직일 가능성이 높습니다.")
@@ -211,4 +241,4 @@ if target_code:
                 except: st.write("뉴스 로딩 실패")
 
         except Exception as e: 
-            st.error(f"오류 발생: {e}") # <--- 정상적으로 try와 짝을 맞춘 구문
+            st.error(f"오류 발생: {e}")
