@@ -2,6 +2,7 @@ import streamlit as st
 import mojito
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
@@ -16,7 +17,7 @@ st.set_page_config(page_title="스마트 주식 비서", layout="wide")
 # 모바일 가독성을 위한 커스텀 스타일
 st.markdown("""
     <style>
-    .main .block-container { padding-top: 1.5rem; padding-bottom: 1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
+    .main .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
     div[data-testid="stMetric"] { background-color: #ffffff; border: 1px solid #f0f2f6; padding: 10px; border-radius: 10px; }
     @media (max-width: 640px) { .stTabs [data-baseweb="tab-list"] { gap: 10px; } .stTabs [data-baseweb="tab"] { padding-left: 10px; padding-right: 10px; } }
     </style>
@@ -34,7 +35,6 @@ except Exception:
 
 @st.cache_resource
 def get_broker():
-    # 실전투자계좌(mock=False) 연결
     return mojito.KoreaInvestment(
         api_key=APP_KEY, api_secret=APP_SECRET, 
         acc_no=f"{ACC_NO}-{ACC_NO_PS}", mock=False
@@ -52,15 +52,17 @@ def get_stock_dict():
 broker = get_broker()
 STOCK_DICT = get_stock_dict()
 
-# 3. 사이드바 (설정)
-st.sidebar.header("⚙️ 검색 및 설정")
-user_input = st.sidebar.text_input("종목명 또는 코드", value="삼성전자")
-timeframe = st.sidebar.radio("차트 주기", ("일봉", "주봉", "월봉"), horizontal=True)
+# 3. 상단 검색 및 설정 (사이드바 제거, 모바일 친화적 구성)
+with st.expander("⚙️ 종목 검색 및 설정", expanded=True):
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        user_input = st.text_input("종목명 또는 코드 입력", value="삼성전자")
+        timeframe = st.radio("차트 주기", ("일봉", "주봉", "월봉"), horizontal=True)
+    with col2:
+        up_color = st.color_picker("상승 색상 (양봉)", "#FF4136")
+        down_color = st.color_picker("하락 색상 (음봉)", "#0074D9")
+
 tf_map = {"일봉": "D", "주봉": "W", "월봉": "M"}
-
-up_color = st.sidebar.color_picker("상승 색상", "#FF4136")
-down_color = st.sidebar.color_picker("하락 색상", "#0074D9")
-
 target_code = None
 target_name = None
 
@@ -75,7 +77,8 @@ if user_input:
     else:
         matches = difflib.get_close_matches(user_input, list(STOCK_DICT.keys()), n=1, cutoff=0.2)
         if matches:
-            if st.sidebar.button(f"'{matches[0]}' 분석하기"):
+            st.info(f"💡 혹시 '{matches[0]}' 종목을 찾으시나요?")
+            if st.button(f"'{matches[0]}' 분석하기"):
                 target_code = STOCK_DICT[matches[0]]
                 target_name = matches[0]
 
@@ -89,33 +92,30 @@ if target_code:
             diff = int(price_resp['prdy_vrss'])
             rate = float(price_resp['prdy_ctrt'])
             
-            # [B] 차트 데이터 수신 (과거 탐색을 위해 500일치 수집)
+            # [B] 차트 데이터 수신
             end_d = datetime.now().strftime("%Y%m%d")
             start_d = (datetime.now() - timedelta(days=500)).strftime("%Y%m%d")
             chart_res = broker.fetch_ohlcv(target_code, tf_map[timeframe], start_d, end_d)['output2']
             
             df = pd.DataFrame(chart_res)
             df['date'] = pd.to_datetime(df['stck_bsop_date'])
-            for col in ['stck_clpr', 'stck_oprc', 'stck_hgpr', 'stck_lwpr']:
+            for col in ['stck_clpr', 'stck_oprc', 'stck_hgpr', 'stck_lwpr', 'acml_vol']:
                 df[col] = pd.to_numeric(df[col])
             
-            # [중요 수정] 데이터를 과거에서 최신 순(오름차순)으로 정렬하여 차트 방향 정상화
+            # 데이터 정렬 및 빈 공간(휴장일) 제거용 날짜 문자열 생성
             df = df.sort_values(by='date').reset_index(drop=True)
+            df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
             
             # 지표 계산
             df['MA5'] = df['stck_clpr'].rolling(window=5).mean()
             df['MA20'] = df['stck_clpr'].rolling(window=20).mean()
 
-            # [C] Y축 가변 범위 및 초기 줌 설정 (정렬이 수정되어 최신 30일이 정확히 반영됨)
-            view_limit = df.tail(30) # 최신 30일 데이터 기준 스케일링
+            # Y축 가변 범위 설정
+            view_limit = df.tail(30)
             min_y = view_limit['stck_lwpr'].min()
             max_y = view_limit['stck_hgpr'].max()
             y_margin = (max_y - min_y) * 0.05
             y_range = [min_y - y_margin, max_y + y_margin]
-
-            # 초기 화면 범위를 최근 20일로 설정하여 더 보기 편하게 수정
-            last_date = df['date'].iloc[-1]
-            zoom_start_date = df['date'].iloc[-20] if len(df) >= 20 else df['date'].iloc[0]
 
             # --- 화면 레이아웃 ---
             st.write(f"### 📈 {target_name} ({target_code})")
@@ -124,30 +124,49 @@ if target_code:
             m1.metric("현재가", f"{curr_p:,}원", f"{diff:,}원 ({rate:+.2f}%)")
             m2.write(f"**거래량:** {int(price_resp['acml_vol']):,}주")
 
-            # --- 인터랙티브 차트 ---
-            fig = go.Figure(data=[go.Candlestick(
-                x=df['date'], open=df['stck_oprc'], high=df['stck_hgpr'],
+            # --- 인터랙티브 차트 (주가 + 거래량 분할) ---
+            # 서브플롯 설정 (1열 2행: 위는 주가, 아래는 거래량)
+            fig = make_subplots(
+                rows=2, cols=1, shared_xaxes=True, 
+                vertical_spacing=0.03, row_heights=[0.7, 0.3]
+            )
+
+            # 1번 캔들 차트
+            fig.add_trace(go.Candlestick(
+                x=df['date_str'], open=df['stck_oprc'], high=df['stck_hgpr'],
                 low=df['stck_lwpr'], close=df['stck_clpr'],
                 increasing_line_color=up_color, decreasing_line_color=down_color,
                 name='주가'
-            )])
-            fig.add_trace(go.Scatter(x=df['date'], y=df['MA5'], name='5일선', line=dict(color='orange', width=1)))
-            fig.add_trace(go.Scatter(x=df['date'], y=df['MA20'], name='20일선', line=dict(color='purple', width=1)))
+            ), row=1, col=1)
             
+            # 이동평균선
+            fig.add_trace(go.Scatter(x=df['date_str'], y=df['MA5'], name='5일선', line=dict(color='orange', width=1)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df['date_str'], y=df['MA20'], name='20일선', line=dict(color='purple', width=1)), row=1, col=1)
+
+            # 2번 거래량 막대그래프 (양봉/음봉 색상 맞춤)
+            vol_colors = np.where(df['stck_clpr'] >= df['stck_oprc'], up_color, down_color)
+            fig.add_trace(go.Bar(
+                x=df['date_str'], y=df['acml_vol'],
+                marker_color=vol_colors, name='거래량'
+            ), row=2, col=1)
+            
+            # 차트 레이아웃 업데이트 (빈 공간 제거 및 줌 설정)
             fig.update_layout(
-                height=480,
-                template='plotly_white',
-                margin=dict(l=0, r=0, t=10, b=0),
-                yaxis=dict(
-                    range=y_range, fixedrange=False, side='right', 
-                    showgrid=True, gridcolor='#f0f0f0'
-                ),
-                xaxis=dict(
-                    range=[zoom_start_date, last_date + timedelta(days=1)],
-                    rangeslider_visible=False, type='date'
-                ),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                height=550, template='plotly_white', margin=dict(l=0, r=0, t=10, b=0),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                yaxis=dict(range=y_range, fixedrange=False, side='right', showgrid=True, gridcolor='#f0f0f0'),
+                yaxis2=dict(side='right', showgrid=False)
             )
+            
+            # [중요] X축을 Category로 변경하여 휴장일 틈새 제거 & 최근 30일로 줌
+            zoom_start = max(0, len(df) - 30)
+            fig.update_xaxes(
+                type='category', 
+                range=[zoom_start, len(df)], 
+                rangeslider_visible=False,
+                showgrid=False
+            )
+
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
 
             # --- 하단 상세 정보 (탭) ---
@@ -177,7 +196,6 @@ if target_code:
                 except: st.write("수급 데이터 일시 오류")
 
             with tab2:
-                # [수정] 뉴스 기사의 발행일자(pubDate)를 가져와서 추가
                 try:
                     enc_name = urllib.parse.quote(target_name)
                     rss_url = f"https://news.google.com/rss/search?q={enc_name}&hl=ko&gl=KR&ceid=KR:ko"
@@ -186,15 +204,12 @@ if target_code:
                         title = item.find('title').text
                         link = item.find('link').text
                         pub_date = item.find('pubDate').text
-                        
-                        # 보기 좋게 날짜 자르기 (예: 'Wed, 15 Apr 2026')
                         date_str = pub_date[:16]
                         st.markdown(f"🔹 **[{title}]({link})**")
                         st.caption(f"📅 {date_str}")
                 except: st.write("뉴스를 불러올 수 없습니다.")
 
             with tab3:
-                # [수정] 투자 전략을 다시 표(DataFrame) 형식으로 상세하게 복구
                 volatility = df['stck_clpr'].pct_change().std()
                 v_f = volatility * 100
                 st.write(f"**현재 변동성:** {v_f:.2f}%")
