@@ -14,7 +14,6 @@ import FinanceDataReader as fdr
 # 1. 앱 설정 (다크모드 완벽 대응 스타일)
 st.set_page_config(page_title="스마트 주식 비서 Pro", layout="wide")
 
-# [복구] 메인 타이틀
 st.title("📈 스마트 주식 비서 Pro")
 
 # 다크모드 표(Table) 글씨 색상 가시성 확보를 위한 CSS 추가
@@ -120,7 +119,6 @@ else:
         sel = st.selectbox("종목 선택", ["선택하세요..."] + matches)
         if sel != "선택하세요...":
             target_code, target_name = STOCK_DICT[sel], sel
-
 # 5. 메인 분석창
 if target_code:
     with st.spinner("데이터 분석 리포트 생성 중..."):
@@ -229,7 +227,6 @@ if target_code:
                     count = 0
                     for r in rows:
                         tds = r.select('td')
-                        # [복구 및 수정 완료] 이전에 짤렸던 코드 부분을 완벽하게 복구했습니다.
                         if len(tds) == 9 and tds[0].text.strip():
                             fv, iv = int(tds[6].text.strip().replace(',','')), int(tds[5].text.strip().replace(',',''))
                             pv = -(fv + iv)
