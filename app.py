@@ -14,15 +14,19 @@ import FinanceDataReader as fdr
 # 1. 앱 설정 (다크모드 완벽 대응 스타일)
 st.set_page_config(page_title="스마트 주식 비서 Pro", layout="wide")
 
+# [수정] 다크모드 표(Table) 글씨 색상 가시성 확보를 위한 CSS 추가
 st.markdown("""
     <style>
     .main .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
-    /* 다크모드/라이트모드 자동 대응 박스 스타일 */
     div[data-testid="stMetric"] { 
         padding: 10px; border-radius: 12px; 
         border: 1px solid rgba(128, 128, 128, 0.2);
         background-color: rgba(128, 128, 128, 0.05);
     }
+    table { color: inherit !important; }
+    thead tr th { color: inherit !important; background-color: rgba(128, 128, 128, 0.1) !important; font-weight: bold !important; }
+    tbody tr th { color: inherit !important; }
+    td { color: inherit !important; }
     @media (max-width: 640px) { .stTabs [data-baseweb="tab-list"] { gap: 10px; } .stTabs [data-baseweb="tab"] { padding-left: 10px; padding-right: 10px; } }
     </style>
     """, unsafe_allow_html=True)
@@ -52,7 +56,7 @@ def get_stock_dict():
 broker = get_broker()
 STOCK_DICT = get_stock_dict()
 
-# 3. 분석 엔진 (이동평균선 5, 20, 60, 120일 추가)
+# 3. 분석 엔진
 @st.cache_data(ttl=300)
 def fetch_and_calc(code, timeframe):
     tf_map = {"일봉": "D", "주봉": "W", "월봉": "M"}
@@ -66,13 +70,11 @@ def fetch_and_calc(code, timeframe):
     df = df.sort_values(by='date').reset_index(drop=True)
     df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
     
-    # 이동평균선
     df['MA5'] = df['stck_clpr'].rolling(window=5).mean()
     df['MA20'] = df['stck_clpr'].rolling(window=20).mean()
     df['MA60'] = df['stck_clpr'].rolling(window=60).mean()
     df['MA120'] = df['stck_clpr'].rolling(window=120).mean()
     
-    # 보조지표
     df['std'] = df['stck_clpr'].rolling(window=20).std()
     df['Upper_BB'] = df['MA20'] + (df['std'] * 2)
     df['Lower_BB'] = df['MA20'] - (df['std'] * 2)
@@ -125,7 +127,6 @@ if target_code:
             df = fetch_and_calc(target_code, timeframe)
             fund = get_fundamental(target_code)
 
-            # 통합 지표 영역
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
                 c1.metric(f"{target_name} 현재가", f"{curr_p:,}원", f"{int(price_resp['prdy_vrss']):,}원 ({float(price_resp['prdy_ctrt']):+.2f}%)")
@@ -133,9 +134,16 @@ if target_code:
                 c3.metric("시가총액", fund['시총'])
                 c4.metric("PER / PBR", f"{fund['PER']} / {fund['PBR']}")
 
-            # 차트 영역
+            # [수정] 차트 범위 최적화 (마이너스 값 제거)
             view = df.tail(30)
-            y_range = [view[['stck_lwpr', 'Lower_BB']].min().min()*0.98, view[['stck_hgpr', 'Upper_BB']].max().max()*1.02]
+            # Y축의 최소값이 무조건 0보다 크거나 같도록 max(0, ...) 적용
+            min_y = max(0, view[['stck_lwpr', 'Lower_BB']].min().min() * 0.98)
+            max_y = view[['stck_hgpr', 'Upper_BB']].max().max() * 1.02
+            y_range = [min_y, max_y]
+            
+            # 거래량 차트도 현재 보이는 30일치 데이터 기준의 최대값으로 최적화
+            vol_max = view['acml_vol'].max()
+
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
             
             fig.add_trace(go.Candlestick(x=df['date_str'], open=df['stck_oprc'], high=df['stck_hgpr'], low=df['stck_lwpr'], close=df['stck_clpr'], increasing_line_color=up_color, decreasing_line_color=down_color, name='주가'), row=1, col=1)
@@ -150,11 +158,19 @@ if target_code:
             vol_colors = np.where(df['stck_clpr'] >= df['stck_oprc'], up_color, down_color)
             fig.add_trace(go.Bar(x=df['date_str'], y=df['acml_vol'], marker_color=vol_colors, name='거래량'), row=2, col=1)
             
-            fig.update_layout(height=500, template='plotly_white', margin=dict(l=0, r=0, t=10, b=0), dragmode='pan', yaxis=dict(range=y_range, side='right'), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            fig.update_layout(
+                height=500, template='plotly_white', margin=dict(l=0, r=0, t=10, b=0), dragmode='pan',
+                # [수정] 범례(Legend)를 차트 영역 상단 내부로 겹치게(Overlay) 이동
+                legend=dict(orientation="h", yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(128,128,128,0.1)"),
+                yaxis=dict(range=y_range, side='right', showgrid=True, gridcolor='rgba(128,128,128,0.1)'),
+                # [수정] 거래량 Y축 범위를 0 이상으로 고정
+                yaxis2=dict(side='right', showgrid=False, range=[0, vol_max * 1.1]),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+            )
             fig.update_xaxes(type='category', range=[len(df)-30, len(df)], rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-            # 하단 탭 (넓은 화면으로 변경)
+            # 하단 탭
             t1, t2, t3 = st.tabs(["🎯 투자 전략 & AI 분석", "📊 수급(매매) 동향", "📰 뉴스피드"])
             
             with t1:
@@ -163,7 +179,6 @@ if target_code:
                 v_f = volatility * 100
                 st.write(f"현재 주가 변동성: **{v_f:.2f}%**")
                 
-                # [복구] 4단계 + 3개 추천 가격 풀사이즈 표
                 strat = {
                     "초단기 (3일)": [int(curr_p*0.99), int(curr_p*(1+0.02*v_f)), int(curr_p*0.97)],
                     "단기 (1개월)": [int(curr_p*0.97), int(curr_p*(1+0.05*v_f)), int(curr_p*0.93)],
@@ -175,7 +190,6 @@ if target_code:
                 
                 st.divider()
 
-                # [복구 및 강화] AI 종합 분석과 용어 설명 합치기
                 st.subheader("🤖 AI 종합 판단 결과")
                 rsi = df['RSI'].iloc[-1]
                 ma60, ma120 = df['MA60'].iloc[-1], df['MA120'].iloc[-1]
@@ -206,7 +220,6 @@ if target_code:
                 st.write("- **120일선 (경기선):** 6개월 평균 가격으로, 장기적인 대세 상승/하락을 가르는 가장 중요한 기준선입니다.")
 
             with t2:
-                # [복구] 수급(매매) 동향 탭
                 try:
                     h = {'User-Agent': 'Mozilla/5.0'}
                     n_url = f"https://finance.naver.com/item/frgn.naver?code={target_code}"
@@ -214,29 +227,8 @@ if target_code:
                     n_res.encoding = 'euc-kr'
                     rows = BeautifulSoup(n_res.text, 'html.parser').select('table.type2 tr')
                     t_html = '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12px; text-align:center;">'
-                    t_html += '<tr style="border-bottom: 1px solid gray; background:#f8f9fa;"><th>날짜</th><th>개인</th><th>외국인</th><th>기관</th></tr>'
+                    t_html += '<tr style="border-bottom: 1px solid gray;"><th>날짜</th><th>개인</th><th>외국인</th><th>기관</th></tr>'
                     count = 0
                     for r in rows:
                         tds = r.select('td')
-                        if len(tds) == 9 and tds[0].text.strip():
-                            fv, iv = int(tds[6].text.strip().replace(',','')), int(tds[5].text.strip().replace(',',''))
-                            pv = -(fv + iv)
-                            def s(v): return f'color:{"#FF4136" if v>0 else "#0074D9" if v<0 else "inherit"}'
-                            t_html += f'<tr><td>{tds[0].text[5:]}</td><td style="{s(pv)}">{pv:+,}</td><td style="{s(fv)}">{fv:+,}</td><td style="{s(iv)}">{iv:+,}</td></tr>'
-                            count += 1
-                            if count >= 10: break # 10거래일 노출
-                    t_html += '</table></div>'
-                    st.markdown(t_html, unsafe_allow_html=True)
-                except Exception as e: 
-                    st.write("데이터 갱신 지연으로 수급 정보를 일시적으로 불러올 수 없습니다.")
-
-            with t3:
-                try:
-                    enc = urllib.parse.quote(target_name)
-                    rss = ET.fromstring(requests.get(f"https://news.google.com/rss/search?q={enc}&hl=ko&gl=KR&ceid=KR:ko").content)
-                    for item in rss.findall('.//item')[:5]:
-                        st.markdown(f"🔹 **[{item.find('title').text}]({item.find('link').text})**")
-                        st.caption(f"📅 {item.find('pubDate').text[:16]}")
-                except: st.write("뉴스 로딩 실패")
-
-        except Exception as e: st.error(f"데이터 분석 중 오류 발생: {e}")
+                        if len(tds) == 9 and tds[0].text.
